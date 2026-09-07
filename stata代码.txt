@@ -1,0 +1,87 @@
+*数据预处理
+egen indcode=group(Ind)
+destring MCAI, replace
+*1%-99%双侧缩尾
+ssc install winsor
+winsor2 KMV MCAI IC WW ESG Size Lev ROA Fixed Growth ListAge Dual Top1 Cashflow Inv, suffix(w) cut(1 99)
+*生成滞后一期核心解释（论文基准使用滞后L1_MCAI）
+cap drop L1_MCAIw
+sort id year
+bysort id (year): gen L1_MCAIw = MCAIw[_n-1]
+label var L1_MCAIw "滞后一期MCAI（工具变量）"
+sum L1_MCAIw
+
+*2.描述性统计
+ssc install logout
+logout, save(描述性统计) word replace: tabstat KMVw MCAIw L1_MCAIw ICw WWw ESGw Sizew Levw ROAw Fixedw Growthw ListAgew Dualw Top1w Cashfloww Invw, stat(count mean sd min p50 max) col(stat) format(%10.2f)
+
+*3.基准回归（正文主回归采用滞后一期L1_MCAI，当期作为对比）
+ssc install estout
+*列1：当期MCAI
+reg KMVw MCAIw Sizew Levw ROAw Fixedw Growthw ListAgew Dualw Top1w Cashfloww Invw i.year i.indcode, robust
+est store m1_cur
+*列2：滞后一期（论文基准H1）
+reg KMVw L1_MCAIw Sizew Levw ROAw Fixedw Growthw ListAgew Dualw Top1w Cashfloww Invw i.year i.indcode, robust
+est store m1
+esttab m1_cur m1 using 主回归.rtf, r2 ar2 se star(* 0.1 ** 0.05 *** 0.01) replace nogap b(3)
+
+
+*内生性检验2：滞后两期L2_MCAI作为IV（正文稳健内生）
+sort id year
+xtset id year
+gen L1_MCAIw = L.MCAIw
+gen L2_MCAIw = L2.MCAIw
+ivregress 2sls KMVw (MCAIw=L2_MCAIw) Sizew Levw ROAw Fixedw Growthw ListAgew Dualw Top1w Cashfloww Invw i.year i.indcode, robust
+est store iv_lag2
+esttab iv_lag2 using IV_滞后两期.rtf, replace b(3) se(3) star(* 0.1 ** 0.05 *** 0.01)
+
+*5.调节效应：内控IC、融资约束WW（中心化构造交互，当期+滞后两套）
+ssc install outreg2
+center MCAIw L1_MCAIw ICw WWw
+*（1）内部控制调节 H2
+gen MCAI_IC=c_MCAIw*c_ICw
+gen L1MCAI_IC=c_L1_MCAIw*c_ICw
+*当期
+reg KMVw MCAIw ICw MCAI_IC Sizew Levw ROAw Fixedw Growthw ListAgew Dualw Top1w Cashfloww Invw i.year i.indcode,robust
+est store m2_ic1
+*滞后基准
+reg KMVw L1_MCAIw ICw L1MCAI_IC Sizew Levw ROAw Fixedw Growthw ListAgew Dualw Top1w Cashfloww Invw i.year i.indcode,robust
+est store m2_ic2
+outreg [m1_cur m2_ic1 m1 m2_ic2] using 内控调节.doc,replace tstat bdec(3) tdec(2) addtext(Yearfix,YES,Indfix,YES)
+
+*（2）融资约束调节 H3
+gen L1MCAI_WW=c_L1_MCAIw*c_WWw
+reg KMVw L1_MCAIw WWw L1MCAI_WW Sizew Levw ROAw Fixedw Growthw ListAgew Dualw Top1w Cashfloww Invw i.year i.indcode,robust
+est store m3_ww
+outreg [m1 m3_ww] using 融资约束调节.doc,replace tstat bdec(3) addtext(Yearfix,YES,Indfix,YES)
+
+*6.异质性检验：高科技GKJ/重污染ZWR（滞后为主，当期为辅+Chow检验）
+*高科技分组
+reg KMVw L1_MCAIw Sizew Levw ROAw Fixedw Growthw ListAgew Dualw Top1w Cashfloww Invw i.year i.indcode if GKJ==1,robust
+est store g1
+reg KMVw L1_MCAIw Sizew Levw ROAw Fixedw Growthw ListAgew Dualw Top1w Cashfloww Invw i.year i.indcode if GKJ==0,robust
+est store g0
+*重污染分组
+reg KMVw L1_MCAIw Sizew Levw ROAw Fixedw Growthw ListAgew Dualw Top1w Cashfloww Invw i.year i.indcode if ZWR==1,robust
+est store z1
+reg KMVw L1_MCAIw Sizew Levw ROAw Fixedw Growthw ListAgew Dualw Top1w Cashfloww Invw i.year i.indcode if ZWR==0,robust
+est store z0
+esttab g1 g0 z1 z0 using 行业异质性.rtf, r2 ar2 se star(* 0.1 ** 0.05 *** 0.01) replace nogap
+
+*Chow组间系数检验
+ssc install chowtest,replace
+chowtest KMVw L1_MCAIw Sizew Levw ROAw Fixedw Growthw ListAgew Dualw Top1w Cashfloww Invw i.year i.indcode,group(GKJ)
+chowtest KMVw L1_MCAIw Sizew Levw ROAw Fixedw Growthw Invw i.year i.indcode,group(ZWR)
+
+*7.稳健性1：ESG替换核心解释变量
+reg KMVw ESGw Sizew Levw ROAw Fixedw Growthw ListAgew Dualw Top1w Cashfloww Invw i.year i.indcode,robust
+est store m_esg
+esttab m_esg using 稳健_ESG替换.rtf, r2 ar2 se star(* 0.1 ** 0.05 *** 0.01) replace nogap
+
+*8.稳健性2 PSM匹配
+summ L1_MCAIw
+gen treat=(L1_MCAIw>r(mean))
+psmatch2 treat KMVw Sizew Levw ROAw Fixedw Growthw ListAgew Dualw Top1w Cashfloww Invw, common
+reg KMVw L1_MCAIw Sizew Levw ROAw Fixedw Growthw ListAgew Dualw Top1w Cashfloww Invw i.year i.indcode if _weight!=.,robust
+est store m_psm
+esttab m_psm using 稳健_PSM.rtf, replace b(3) se(3) star(* 0.1 ** 0.05 *** 0.01)

@@ -1,0 +1,363 @@
+import os
+import re
+import pandas as pd
+import numpy as np
+import torch
+from torch.optim import AdamW  # 核心修改：PyTorch原生AdamW
+from tqdm import tqdm
+from zhipuai import ZhipuAI
+# transformers仅保留其他导入，删除AdamW
+from transformers import BertTokenizer, BertForSequenceClassification, get_linear_schedule_with_warmup
+from sklearn.model_selection import train_test_split
+from torch.utils.data import Dataset, DataLoader
+from torch.cuda.amp import autocast, GradScaler
+
+# ===================== 【仅需修改这3处，其余默认】 =====================
+MDA_TXT_PATH = "填写本地MDA文件路径"  
+ZHIPU_API_KEY = "填写个人密钥"  # 智谱API
+OUTPUT_PATH = "智谱AI_MCAI指数结果"  # 结果输出文件夹，自动生成
+# ======================================================================
+
+# 固定配置
+os.makedirs(OUTPUT_PATH, exist_ok=True)
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")  # 无GPU自动用CPU
+FINBERT_MODEL = "yiyanghkust/finbert-tone"  # 论文同款金融FinBERT
+BATCH_SIZE = 16  # 低配CPU/GPU可改为8
+EPOCHS = 3  # 论文模型预训练轮数，无需调整
+LEARNING_RATE = 2e-5  # 模型微调学习率
+SAMPLE_RATE = 0.1  # 论文要求的10%样本标注
+LABEL_MAP = {"风险暴露": -1, "风险防范": 1, "无关": 0}  # 论文标注映射
+LABEL_REVERSE = {-1: "风险暴露", 1: "风险防范", 0: "无关"}
+
+# ---------------------- 模块1：论文关键词初筛 ----------------------
+# 论文明确的物理/转型风险关键词
+CLIMATE_KEYWORDS = {填写词典关键词}
+ALL_KEYWORDS = CLIMATE_KEYWORDS["物理风险"] + CLIMATE_KEYWORDS["转型风险"]
+KEYWORD_PATTERN = re.compile("|".join([re.escape(k) for k in ALL_KEYWORDS]))  # 关键词模糊匹配
+
+
+# ---------------------- 模块2：MDA文本解析+关键词初筛（构建模型训练文本池） ----------------------
+def parse_mda_and_filter():
+    """
+    步骤1：解析MDA文本，提取股票代码/年份/句子
+    步骤2：宽口径关键词初筛，提取含关键词的句子
+    返回：论文要求的模型训练文本池
+    """
+    data_list = []
+    file_list = [f for f in os.listdir(MDA_TXT_PATH) if f.endswith(".txt")]
+    for file_name in tqdm(file_list, desc="解析MDA文本+关键词初筛"):
+        # 解析命名：股票代码_YYYY-MM-DD.txt
+        if "_" not in file_name:
+            print(f"跳过命名不规范文件：{file_name}，要求：股票代码_YYYY-MM-DD.txt")
+            continue
+        stock_code, date = file_name.replace(".txt", "").split("_")
+        year = date.split("-")[0]
+
+        # 读取文本（兼容UTF-8/GBK，解决中文乱码）
+        file_path = os.path.join(MDA_TXT_PATH, file_name)
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                content = f.read().strip()
+        except:
+            with open(file_path, "r", encoding="gbk") as f:
+                content = f.read().strip()
+
+        # 切分句子（适配MDA中文文本，过滤过短句）
+        sentences = re.split(r"[。！？；…]", content)
+        for sen in sentences:
+            sen = sen.strip()
+            if len(sen) < 10:  # 过滤无意义短句子
+                continue
+            # 宽口径关键词初筛：含任意关键词即纳入文本池（论文原版）
+            if KEYWORD_PATTERN.search(sen):
+                data_list.append({
+                    "stock_code": stock_code,
+                    "year": year,
+                    "date": date,
+                    "sentence": sen,
+                    "raw_file": file_name
+                })
+
+    # 转为DataFrame，去重
+    df_pool = pd.DataFrame(data_list)
+    df_pool = df_pool.drop_duplicates(subset=["stock_code", "year", "sentence"]).reset_index(drop=True)
+    # 统计基础信息
+    print(f"✅ 论文第一步完成：宽口径关键词初筛后构建文本池")
+    print(
+        f"📊 文本池规模：{len(df_pool)}条句子 | {df_pool['stock_code'].nunique()}家企业 | {df_pool['year'].nunique()}个年份")
+    print(f"📈 年度句子分布：\n{df_pool['year'].value_counts().sort_index()}")
+    # 保存文本池（论文模型训练基础）
+    df_pool.to_csv(os.path.join(OUTPUT_PATH, "1_论文原版文本池_关键词初筛后.csv"), index=False, encoding="utf-8-sig")
+    return df_pool
+
+
+# ---------------------- 模块3：智谱AI+人工标注（论文第二步：10%样本标注） ----------------------
+def zhipu_annotate(df_pool):
+    """
+    智谱AI替完成标注，贴合论文「GPT+人工联合标注」要求
+    步骤1：按年份分层抽样10%样本（论文要求）
+    步骤2：智谱AI批量标注，标注结果：风险暴露/风险防范/无关
+    步骤3：保存标注结果，供人工修正（论文核心要求）
+    """
+    # 初始化智谱AI客户端
+    client = ZhipuAI(api_key=ZHIPU_API_KEY)
+    # 论文要求：按年份分层抽样10%，保证各年份标注比例
+    df_sample = df_pool.groupby("year", group_keys=False).apply(lambda x: x.sample(frac=SAMPLE_RATE, random_state=42))
+    df_sample = df_sample.reset_index(drop=True)
+    print(f"\n✅ 论文第二步开始：按要求抽取10%样本，共{len(df_sample)}条，进行智谱AI标注")
+
+    # 智谱AI标注提示词
+    prompt = """
+    你是金融文本分析专家，现分析上市公司年报MD&A章节的句子，判断是否与企业气候风险相关，判定标准如下，仅回复“风险暴露”“风险防范”或“无关”，不要多余解释：
+    1. 风险暴露：句子直接/间接反映企业面临气候物理风险（极端天气、气象灾害等）或转型风险（环保政策、碳定价、低碳要求等），哪怕仅提及风险对企业的潜在影响也属于此类；
+    2. 风险防范：句子直接/间接反映企业为应对气候风险采取的任何措施、布局、改造、规划，包括低碳、绿色、环保、节能、清洁能源相关的所有经营行为，哪怕未明确提及“气候风险”也属于此类；
+    3. 无关：句子完全未提及任何气候风险、低碳、绿色、环保、节能相关内容，与气候风险无任何关联。
+    待分析句子：{sentence}
+    标注结果：
+    """
+
+    # 批量标注函数
+    def annotate_single(sentence):
+        try:
+            response = client.chat.completions.create(
+                model="glm-3-turbo",  # 可选：glm-3-turbo/chatglm3-6b，国内全兼容
+                messages=[{"role": "user", "content": prompt.format(sentence=sentence)}],
+                temperature=0,  # 0温度，保证标注一致性（论文要求）
+                max_tokens=10
+            )
+            label = response.choices[0].message.content.strip()
+            # 修正标注结果（防止模型输出异常）
+            if label not in ["风险暴露", "风险防范", "无关"]:
+                return "无关"
+            return label
+        except Exception as e:
+            print(f"智谱AI标注失败：{sentence[:50]} | 错误：{e}")
+            return "无关"
+
+    # 批量执行标注（显示进度）
+    tqdm.pandas(desc="智谱AI批量标注中")
+    df_sample["ai_label"] = df_sample["sentence"].progress_apply(annotate_single)
+    # 映射标注编码（论文要求：风险暴露=-1，风险防范=1，无关=0）
+    df_sample["label_code"] = df_sample["ai_label"].map(LABEL_MAP)
+    # 保存AI标注结果，供人工修正
+    df_sample.to_csv(os.path.join(OUTPUT_PATH, "2_智谱AI标注样本_待人工修正.csv"), index=False, encoding="utf-8-sig")
+    print(f"✅ 智谱AI标注完成，结果保存至：2_智谱AI标注样本_待人工修正.csv")
+    print(f"📌 论文要求：请人工修正错误标注后，将文件重命名为「2_智谱AI标注样本_人工修正.csv」再执行后续步骤")
+
+    # 读取人工修正后的标注集（需用户完成人工修正后执行）
+    while True:
+        corrected_file = os.path.join(OUTPUT_PATH, "2_智谱AI标注样本_人工修正.csv")
+        if os.path.exists(corrected_file):
+            df_labeled = pd.read_csv(corrected_file, encoding="utf-8-sig")
+            # 过滤有效标注，排除异常值
+            df_labeled = df_labeled[df_labeled["label_code"].isin([-1, 0, 1])].reset_index(drop=True)
+            print(f"✅ 读取人工修正后标注集，有效标注样本：{len(df_labeled)}条")
+            return df_labeled
+        else:
+            input(
+                f"⚠️  未检测到人工修正后的文件，请修正后将文件放在{OUTPUT_PATH}文件夹，并重命名为指定名称，按回车键继续...")
+
+
+# ---------------------- 模块4：构建FinBERT数据集（适配模型训练） ----------------------
+class ClimateRiskDataset(Dataset):
+    """论文要求的FinBERT训练数据集，适配PyTorch"""
+
+    def __init__(self, sentences, labels, tokenizer, max_len=512):
+        self.sentences = sentences
+        self.labels = labels
+        self.tokenizer = tokenizer
+        self.max_len = max_len
+
+    def __len__(self):
+        return len(self.sentences)
+
+    def __getitem__(self, idx):
+        sen = self.sentences[idx]
+        label = self.labels[idx]
+        # FinBERT分词（适配金融文本）
+        encoding = self.tokenizer(
+            sen,
+            truncation=True,
+            padding="max_length",
+            max_length=self.max_len,
+            return_tensors="pt"
+        )
+        return {
+            "input_ids": encoding["input_ids"].flatten(),
+            "attention_mask": encoding["attention_mask"].flatten(),
+            "label": torch.tensor(label, dtype=torch.long)
+        }
+
+
+# ---------------------- 模块5：FinBERT模型微调（论文第三步：模型预训练+预测） ----------------------
+def finbert_finetune_and_predict(df_pool, df_labeled):
+    """
+    论文第三步核心：
+    1. 加载FinBERT，调整输出层为3分类（风险暴露/防范/无关）
+    2. 按7:3划分训练/验证集（论文原版比例）
+    3. 模型微调训练
+    4. 用微调后的模型对文本池全量句子做预测+情感概率计算
+    """
+    # 步骤1：加载FinBERT分词器和模型（论文同款）
+    tokenizer = BertTokenizer.from_pretrained(FINBERT_MODEL)
+    model = BertForSequenceClassification.from_pretrained(FINBERT_MODEL, num_labels=3).to(DEVICE)
+    print(f"\n✅ 论文第三步开始：加载FinBERT模型，运行设备：{DEVICE}")
+
+    # 步骤2：划分7:3训练/验证集（论文原版要求，分层抽样保证标签比例）
+    X = df_labeled["sentence"].tolist()
+    y = df_labeled["label_code"].tolist()
+    X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.3, random_state=42, stratify=y)
+    # 构建数据集和数据加载器
+    train_dataset = ClimateRiskDataset(X_train, y_train, tokenizer)
+    val_dataset = ClimateRiskDataset(X_val, y_val, tokenizer)
+    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False)
+
+    # 步骤3：模型优化器和学习率调度器
+    optimizer = AdamW(model.parameters(), lr=LEARNING_RATE)
+    total_steps = len(train_loader) * EPOCHS
+    scheduler = get_linear_schedule_with_warmup(optimizer, num_warmup_steps=0, num_training_steps=total_steps)
+    scaler = GradScaler()  # 混合精度训练，提升速度/降低显存占用
+
+    # 步骤4：模型微调训练（论文预训练核心）
+    best_val_acc = 0.0
+    for epoch in range(EPOCHS):
+        # 训练模式
+        model.train()
+        train_loss = 0.0
+        for batch in tqdm(train_loader, desc=f"Epoch {epoch + 1}/{EPOCHS} 训练"):
+            input_ids = batch["input_ids"].to(DEVICE)
+            attention_mask = batch["attention_mask"].to(DEVICE)
+            labels = batch["label"].to(DEVICE)
+            optimizer.zero_grad()
+            with autocast():
+                outputs = model(input_ids, attention_mask=attention_mask, labels=labels)
+                loss = outputs.loss
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
+            scheduler.step()
+            train_loss += loss.item()
+        avg_train_loss = train_loss / len(train_loader)
+
+        # 验证模式
+        model.eval()
+        val_loss = 0.0
+        val_correct = 0
+        val_total = 0
+        with torch.no_grad():
+            for batch in val_loader:
+                input_ids = batch["input_ids"].to(DEVICE)
+                attention_mask = batch["attention_mask"].to(DEVICE)
+                labels = batch["label"].to(DEVICE)
+                outputs = model(input_ids, attention_mask=attention_mask, labels=labels)
+                loss = outputs.loss
+                val_loss += loss.item()
+                # 计算验证准确率
+                logits = outputs.logits
+                preds = torch.argmax(logits, dim=1)
+                val_total += labels.size(0)
+                val_correct += (preds == labels).sum().item()
+        avg_val_loss = val_loss / len(val_loader)
+        val_acc = val_correct / val_total
+
+        # 保存最优模型（论文要求的预训练模型）
+        if val_acc > best_val_acc:
+            best_val_acc = val_acc
+            torch.save(model.state_dict(), os.path.join(OUTPUT_PATH, "3_论文原版_FinBERT最优模型.pth"))
+        print(
+            f"Epoch {epoch + 1} | 训练损失：{avg_train_loss:.4f} | 验证损失：{avg_val_loss:.4f} | 验证准确率：{val_acc:.4f}")
+    print(f"✅ FinBERT模型预训练完成，最优验证准确率：{best_val_acc:.4f}，模型保存至结果文件夹")
+
+    # 步骤5：用微调后的最优模型对文本池全量句子做预测+情感概率计算
+    model.load_state_dict(torch.load(os.path.join(OUTPUT_PATH, "3_论文原版_FinBERT最优模型.pth")))
+    model.eval()  # 评估模式
+    all_sentences = df_pool["sentence"].tolist()
+    all_preds = []
+    all_neg_probs = []  # 负面情感概率（风险暴露）
+    all_pos_probs = []  # 正面情感概率（风险防范）
+
+    # 批量预测（提升效率，避免内存溢出）
+    for i in tqdm(range(0, len(all_sentences), BATCH_SIZE * 2), desc="FinBERT全量预测+概率计算"):
+        batch_sen = all_sentences[i:i + BATCH_SIZE * 2]
+        encoding = tokenizer(
+            batch_sen,
+            truncation=True,
+            padding="max_length",
+            max_length=512,
+            return_tensors="pt"
+        ).to(DEVICE)
+        with torch.no_grad():
+            outputs = model(**encoding)
+            logits = outputs.logits
+            probs = torch.softmax(logits, dim=1).cpu().numpy()  # 情感概率（0=负面，1=中性，2=正面）
+            preds = torch.argmax(logits, dim=1).cpu().numpy()  # 预测标签编码
+        # 提取结果
+        all_preds.extend(preds.tolist())
+        all_neg_probs.extend(probs[:, 0].tolist())  # 负面概率（论文用于计算最大值）
+        all_pos_probs.extend(probs[:, 2].tolist())  # 正面概率（论文用于计算平均值）
+
+    # 将预测结果加入文本池
+    df_pool["pred_label_code"] = all_preds
+    df_pool["pred_label"] = df_pool["pred_label_code"].map(LABEL_REVERSE)
+    df_pool["neg_prob"] = all_neg_probs  # 负面情感概率
+    df_pool["pos_prob"] = all_pos_probs  # 正面情感概率
+    # 筛选有效气候风险文本（剔除无关，仅保留风险暴露+防范，论文要求）
+    df_effective = df_pool[df_pool["pred_label_code"] != 0].reset_index(drop=True)
+    # 统计年度有效数据量
+    year_effective_count = df_effective["year"].value_counts().sort_index()
+    print(f"\n✅ FinBERT全量预测完成，有效气候风险文本：{len(df_effective)}条")
+    print(f"📊 年度有效数据量分布：\n{year_effective_count}")
+    # 低数据量提示
+    for year, count in year_effective_count.items():
+        if count < 2000:
+            print(f"⚠️  提示：{year}年有效数据{count}条，可将抽样比例提至20%重新训练模型")
+    # 保存预测结果
+    df_pool.to_csv(os.path.join(OUTPUT_PATH, "4_FinBERT全量预测结果.csv"), index=False, encoding="utf-8-sig")
+    df_effective.to_csv(os.path.join(OUTPUT_PATH, "5_有效气候风险文本_带情感概率.csv"), index=False,
+                        encoding="utf-8-sig")
+    return df_effective
+
+
+# ---------------------- 模块6：构建MCAI指数（论文第四步：最终核心结果） ----------------------
+def build_mcai_index(df_effective):
+    """
+    100%复刻论文MCAI指数公式：
+    企业-年份层面 MCAI = 负面文本的负面情感概率最大值 - 正面文本的正面情感概率平均值
+    无风险暴露文本→neg_prob_max=0；无风险防范文本→pos_prob_mean=0
+    """
+    print(f"\n✅ 论文第四步开始：构建企业-年份层面MCAI指数（论文核心结果）")
+    # 按企业-年份分组计算（论文原版要求）
+    mcai_df = df_effective.groupby(["stock_code", "year"]).apply(lambda x: pd.Series({
+        "neg_prob_max": x[x["pred_label_code"] == -1]["neg_prob"].max() if len(
+            x[x["pred_label_code"] == -1]) > 0 else 0,
+        "pos_prob_mean": x[x["pred_label_code"] == 1]["pos_prob"].mean() if len(
+            x[x["pred_label_code"] == 1]) > 0 else 0,
+        "MCAI": (x[x["pred_label_code"] == -1]["neg_prob"].max() if len(x[x["pred_label_code"] == -1]) > 0 else 0) -
+                (x[x["pred_label_code"] == 1]["pos_prob"].mean() if len(x[x["pred_label_code"] == 1]) > 0 else 0),
+        "risk_expose_count": len(x[x["pred_label_code"] == -1]),  # 风险暴露文本数
+        "risk_prevent_count": len(x[x["pred_label_code"] == 1]),  # 风险防范文本数
+        "total_risk_count": len(x)  # 年度气候风险相关文本总数
+    })).reset_index()
+
+    # 填充缺失值：若某企业某年无相关文本，MCAI=0（论文实证常规处理）
+    all_combos = pd.MultiIndex.from_product(
+        [df_effective["stock_code"].unique(), df_effective["year"].unique()],
+        names=["stock_code", "year"]
+    ).to_frame(index=False)
+    mcai_df = pd.merge(all_combos, mcai_df, on=["stock_code", "year"], how="left").fillna(0)
+
+    # 统计MCAI指数基本信息
+    print(f"✅ MCAI指数构建完成！核心结果统计：")
+    print(f"📊 企业-年份观测值总数：{len(mcai_df)}")
+    print(f"📈 MCAI指数描述性统计：\n{mcai_df['MCAI'].describe()}")
+    print(f"🏢 覆盖企业数：{mcai_df['stock_code'].nunique()} | 📅 覆盖年份数：{mcai_df['year'].nunique()}")
+
+    # 保存最终结果（论文核心因变量，可直接用于实证回归）
+    mcai_df.to_csv(os.path.join(OUTPUT_PATH, "6_论文原版_MCAI指数_最终结果.csv"), index=False, encoding="utf-8-sig")
+    # 保存年度数据量统计
+    year_count = df_effective["year"].value_counts().sort_index()
+    year_count.to_csv(os.path.join(OUTPUT_PATH, "7_年度有效数据量统计.csv"), encoding="utf-8-sig")
+    print(f"\n🎉 核心结果为：6_论文原版_MCAI指数_最终结果.csv")
+    print(f"📁 所有结果文件均保存在：{OUTPUT_PATH} 文件夹")
+    return mcai_df
