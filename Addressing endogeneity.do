@@ -1,27 +1,4 @@
 /********************************************************************
-  Section 4.2 Addressing Endogeneity
-  Paper: Managerial Climate Risk Perception and Corporate Default Risk
-
-  Data file:
-      G:\联合指导\连兰兰合作论文\paper 4\论文+数据+代码\原始数据.xlsx
-
-  Core variables:
-      DD   = KMV-based distance to default
-      MCRP = Managerial Climate Risk Perception
-
-  Identification design:
-      1. Dual-carbon policy attention shock
-      2. DID based on pre-shock high-MCRP firms
-      3. Entropy-balanced DID
-      4. PSM-matched DID
-      5. Dynamic DID / event-study figure
-
-  Note:
-      This code avoids reghdfe and uses built-in Stata commands.
-********************************************************************/
-
-
-/********************************************************************
   0. Basic setup
 ********************************************************************/
 
