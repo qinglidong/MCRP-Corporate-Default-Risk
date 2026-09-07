@@ -1,29 +1,3 @@
-/***********************************************************************
-  Reviewer #2 additional analysis:
-  Media scrutiny / media attention
-
-  Main data:
-  G:\联合指导\连兰兰合作论文\paper 4\论文+数据+代码\原始数据.xlsx
-
-  Media data:
-  G:\联合指导\连兰兰合作论文\paper 4\论文+数据+代码\媒体关注数据.xlsx
-
-  Main variables:
-      DD      = distance to default
-      MCRP    = managerial climate risk perception
-
-  Media variables:
-      SocialMediaOversight = media scrutiny
-      MediaSentiment       = media sentiment/tone
-
-  Design:
-      A. Data diagnostics
-      B. Merge media data with original sample
-      C. High vs. low media scrutiny regressions
-      D. Formal coefficient-difference tests
-      E. Continuous interaction tests
-      F. Optional media-sentiment tests
-***********************************************************************/
 
 clear all
 set more off
@@ -33,7 +7,7 @@ set varabbrev off
   0. Paths
 ***********************************************************************/
 
-global root  "G:/联合指导/连兰兰合作论文/paper 4/论文+数据+代码"
+global root "YOUR_LOCAL_PROJECT_PATH"
 global main  "$root/原始数据.xlsx"
 global media "$root/媒体关注数据.xlsx"
 global out   "$root/media_attention_results"
