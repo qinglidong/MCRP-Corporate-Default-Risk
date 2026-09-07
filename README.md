@@ -10,13 +10,6 @@ This repository contains the author-generated code and documentation used to con
 
 The study uses Chinese A-share listed firms from 2016 to 2025. MCRP is constructed from MD&A disclosures using climate-risk keyword screening, LLM-assisted annotation, manual verification, and FinBERT-based semantic classification. Corporate default risk is measured using KMV-based distance to default.
 
-## Repository structure
-
-- `code/` – Python and Stata code used for variable construction and empirical analysis
-- `dictionary/` – Climate-risk keyword dictionary and coding rules
-- `documentation/` – Variable definitions, data-source information, and replication instructions
-- `data/` – Information on third-party data access and licensing restrictions
-
 ## Data availability
 
 The study uses third-party licensed data from:
