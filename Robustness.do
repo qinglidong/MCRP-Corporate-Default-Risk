@@ -1,33 +1,3 @@
-/********************************************************************
-  Robustness Tests
-  Paper: Managerial Climate Risk Perception and Corporate Default Risk
-
-  Data path:
-      G:\联合指导\连兰兰合作论文\paper 4\论文+数据+代码
-
-  Required files:
-      原始数据.xlsx
-      合并4（企业债务违约）.dta
-      词频MCRP1.xlsx
-      MCRP2&MCRP3.xlsx
-
-  Main variables:
-      DD    = baseline distance to default
-      MCRP  = Managerial Climate Risk Perception
-
-  Robustness design:
-      (1) Alternative dependent variable: DDBhsh
-      (2) Alternative dependent variable: DDmerton
-      (3) Alternative dependent variable: ZScore
-      (4) Alternative MCRP measure: MCRP1, standardized
-      (5) Alternative MCRP measure: MCRP2, standardized
-      (6) Alternative MCRP measure: MCRP3, standardized
-      (7) Firm fixed effects
-      (8) Industry-year fixed effects
-      (9) Excluding 2020
-      (10) Excluding 2020–2022
-********************************************************************/
-
 
 /********************************************************************
   0. Basic setup
@@ -37,7 +7,7 @@ clear all
 set more off
 set varabbrev off
 
-global root "G:/联合指导/连兰兰合作论文/paper 4/论文+数据+代码"
+global root "YOUR_LOCAL_PROJECT_PATH"
 global out  "$root/robustness_output"
 
 capture mkdir "$out"
