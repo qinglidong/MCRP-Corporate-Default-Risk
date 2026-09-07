@@ -15,7 +15,7 @@ from torch.cuda.amp import autocast, GradScaler
 # ===================== 【仅需修改这3处，其余默认】 =====================
 MDA_TXT_PATH = "填写本地MDA文件路径"  
 ZHIPU_API_KEY = "填写个人密钥"  # 智谱API
-OUTPUT_PATH = "智谱AI_MCAI指数结果"  # 结果输出文件夹，自动生成
+OUTPUT_PATH = "智谱AI_MCRP指数结果"  # 结果输出文件夹，自动生成
 # ======================================================================
 
 # 固定配置
@@ -319,45 +319,45 @@ def finbert_finetune_and_predict(df_pool, df_labeled):
     return df_effective
 
 
-# ---------------------- 模块6：构建MCAI指数（论文第四步：最终核心结果） ----------------------
+# ---------------------- 模块6：构建MCRP指数（论文第四步：最终核心结果） ----------------------
 def build_mcai_index(df_effective):
     """
-    100%复刻论文MCAI指数公式：
-    企业-年份层面 MCAI = 负面文本的负面情感概率最大值 - 正面文本的正面情感概率平均值
+    100%复刻论文MCRP指数公式：
+    企业-年份层面 MCRP = 负面文本的负面情感概率最大值 - 正面文本的正面情感概率平均值
     无风险暴露文本→neg_prob_max=0；无风险防范文本→pos_prob_mean=0
     """
-    print(f"\n✅ 论文第四步开始：构建企业-年份层面MCAI指数（论文核心结果）")
+    print(f"\n✅ 论文第四步开始：构建企业-年份层面MCRP指数（论文核心结果）")
     # 按企业-年份分组计算（论文原版要求）
     mcai_df = df_effective.groupby(["stock_code", "year"]).apply(lambda x: pd.Series({
         "neg_prob_max": x[x["pred_label_code"] == -1]["neg_prob"].max() if len(
             x[x["pred_label_code"] == -1]) > 0 else 0,
         "pos_prob_mean": x[x["pred_label_code"] == 1]["pos_prob"].mean() if len(
             x[x["pred_label_code"] == 1]) > 0 else 0,
-        "MCAI": (x[x["pred_label_code"] == -1]["neg_prob"].max() if len(x[x["pred_label_code"] == -1]) > 0 else 0) -
+        "MCRP": (x[x["pred_label_code"] == -1]["neg_prob"].max() if len(x[x["pred_label_code"] == -1]) > 0 else 0) -
                 (x[x["pred_label_code"] == 1]["pos_prob"].mean() if len(x[x["pred_label_code"] == 1]) > 0 else 0),
         "risk_expose_count": len(x[x["pred_label_code"] == -1]),  # 风险暴露文本数
         "risk_prevent_count": len(x[x["pred_label_code"] == 1]),  # 风险防范文本数
         "total_risk_count": len(x)  # 年度气候风险相关文本总数
     })).reset_index()
 
-    # 填充缺失值：若某企业某年无相关文本，MCAI=0（论文实证常规处理）
+    # 填充缺失值：若某企业某年无相关文本，MCRP=0（论文实证常规处理）
     all_combos = pd.MultiIndex.from_product(
         [df_effective["stock_code"].unique(), df_effective["year"].unique()],
         names=["stock_code", "year"]
     ).to_frame(index=False)
     mcai_df = pd.merge(all_combos, mcai_df, on=["stock_code", "year"], how="left").fillna(0)
 
-    # 统计MCAI指数基本信息
-    print(f"✅ MCAI指数构建完成！核心结果统计：")
+    # 统计MCRP指数基本信息
+    print(f"✅ MCRP指数构建完成！核心结果统计：")
     print(f"📊 企业-年份观测值总数：{len(mcai_df)}")
-    print(f"📈 MCAI指数描述性统计：\n{mcai_df['MCAI'].describe()}")
+    print(f"📈 MCRP指数描述性统计：\n{mcai_df['MCRP'].describe()}")
     print(f"🏢 覆盖企业数：{mcai_df['stock_code'].nunique()} | 📅 覆盖年份数：{mcai_df['year'].nunique()}")
 
     # 保存最终结果（论文核心因变量，可直接用于实证回归）
-    mcai_df.to_csv(os.path.join(OUTPUT_PATH, "6_论文原版_MCAI指数_最终结果.csv"), index=False, encoding="utf-8-sig")
+    mcai_df.to_csv(os.path.join(OUTPUT_PATH, "6_论文原版_MCRP指数_最终结果.csv"), index=False, encoding="utf-8-sig")
     # 保存年度数据量统计
     year_count = df_effective["year"].value_counts().sort_index()
     year_count.to_csv(os.path.join(OUTPUT_PATH, "7_年度有效数据量统计.csv"), encoding="utf-8-sig")
-    print(f"\n🎉 核心结果为：6_论文原版_MCAI指数_最终结果.csv")
+    print(f"\n🎉 核心结果为：6_论文原版_MCRP指数_最终结果.csv")
     print(f"📁 所有结果文件均保存在：{OUTPUT_PATH} 文件夹")
     return mcai_df
