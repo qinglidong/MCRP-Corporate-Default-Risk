@@ -1,0 +1,14 @@
+# Python dependencies for MCRP construction and textual analysis
+# Exact historical package versions were not retained.
+# The version ranges below are compatibility-oriented rather than a claim
+# about the exact original environment.
+#
+# Recommended Python version: 3.10 or 3.11
+
+pandas>=1.5
+numpy>=1.23
+torch>=2.0
+transformers>=4.30,<5
+scikit-learn>=1.2
+tqdm>=4.64
+zhipuai>=2.0
