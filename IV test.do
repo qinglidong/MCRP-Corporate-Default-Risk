@@ -1,18 +1,8 @@
-/**********************************************************************
-  2SLS: Instrumental-variable analysis
-
-  Instrument:
-  One-year-lagged leave-one-out industry-year mean MCRP
-
-  Main data:
-  G:\联合指导\连兰兰合作论文\paper 4\论文+数据+代码\原始数据.xlsx
-**********************************************************************/
-
 clear all
 set more off
 set varabbrev off
 
-global root "G:/联合指导/连兰兰合作论文/paper 4/论文+数据+代码"
+global root "YOUR_LOCAL_PROJECT_PATH"
 global data "$root/原始数据.xlsx"
 
 cd "$root"
