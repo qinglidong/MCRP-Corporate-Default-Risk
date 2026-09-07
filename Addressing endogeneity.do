@@ -29,7 +29,7 @@ clear all
 set more off
 
 * Set project path
-global root "G:/联合指导/连兰兰合作论文/paper 4/论文+数据+代码"
+global root "YOUR_LOCAL_PROJECT_PATH"
 global data "$root"
 global out  "$root/empirical_output"
 
