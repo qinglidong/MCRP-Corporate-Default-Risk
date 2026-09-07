@@ -1,18 +1,3 @@
-/**********************************************************************
-  Reviewer #2 - Additional managerial controls
-  Paper: Managerial Climate Risk Perception and Corporate Default Risk
-
-  PURPOSE
-  1. Clean the CSMAR chief executive/general-manager attribute file.
-  2. Merge it with 原始数据.xlsx by firm id and year.
-  3. Re-estimate the baseline model with additional managerial controls.
-  4. Compare the result with the baseline on the identical regression sample.
-
-  IMPORTANT
-  Save the newly collected managerial file in $root as:
-      总经理个人特征.xlsx
-  If the actual filename differs, change only the macro mgrfile below.
-**********************************************************************/
 
 clear all
 set more off
@@ -21,7 +6,7 @@ set varabbrev off
 *=====================================================================*
 * 0. Paths and packages
 *=====================================================================*
-global root "G:/联合指导/连兰兰合作论文/paper 4/论文+数据+代码"
+global root "YOUR_LOCAL_PROJECT_PATH"
 local mgrfile "$root/总经理个人特征.xlsx"
 local mainfile "$root/原始数据.xlsx"
 
