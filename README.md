@@ -37,8 +37,6 @@ Main software used:
 - Transformers
 - Stata
 
-Detailed package requirements are provided in `requirements.txt`.
-
 ## Citation
 
 Citation information will be added upon publication.
